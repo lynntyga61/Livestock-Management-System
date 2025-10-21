@@ -6,8 +6,11 @@
 (define-constant err-unauthorized (err u102))
 (define-constant err-already-exists (err u103))
 (define-constant err-invalid-input (err u104))
+(define-constant err-alert-not-found (err u2001))
+(define-constant err-alert-already-resolved (err u2002))
 
 (define-data-var next-animal-id uint u1)
+(define-data-var next-alert-id uint u1)
 
 (define-map animals
   uint
@@ -299,4 +302,76 @@
 
 (define-read-only (get-animal-location-history (animal-id uint) (location-id uint))
   (map-get? animal-locations {animal-id: animal-id, location-id: location-id})
+)
+
+(define-map wellness-alerts
+  {animal-id: uint, alert-id: uint}
+  {
+    created-at: uint,
+    due-date: uint,
+    alert-type: (string-ascii 50),
+    is-active: bool
+  }
+)
+
+(define-map alert-counters
+  uint
+  uint
+)
+
+(define-map alert-resolution-history
+  {animal-id: uint, alert-id: uint}
+  {
+    resolved-at: uint,
+    resolved-by: principal
+  }
+)
+
+(define-private (create-alert (animal-id uint) (due-date uint))
+  (let (
+    (alert-count (default-to u0 (map-get? alert-counters animal-id)))
+    (new-alert-id (+ alert-count u1))
+  )
+    (map-set wellness-alerts {animal-id: animal-id, alert-id: new-alert-id} {
+      created-at: stacks-block-height,
+      due-date: due-date,
+      alert-type: "checkup-due",
+      is-active: true
+    })
+    (map-set alert-counters animal-id new-alert-id)
+    (ok new-alert-id)
+  )
+)
+
+(define-read-only (get-wellness-alert (animal-id uint) (alert-id uint))
+  (map-get? wellness-alerts {animal-id: animal-id, alert-id: alert-id})
+)
+
+(define-read-only (get-active-alert-count (animal-id uint))
+  (default-to u0 (map-get? alert-counters animal-id))
+)
+
+(define-read-only (is-animal-flagged (animal-id uint))
+  (> (default-to u0 (map-get? alert-counters animal-id)) u0)
+)
+
+(define-public (resolve-wellness-alert (animal-id uint) (alert-id uint))
+  (let ((alert (unwrap! (map-get? wellness-alerts {animal-id: animal-id, alert-id: alert-id}) err-alert-not-found)))
+    (asserts! (is-authorized-vet tx-sender) err-unauthorized)
+    (asserts! (get is-active alert) err-alert-already-resolved)
+    (map-set wellness-alerts {animal-id: animal-id, alert-id: alert-id} (merge alert {is-active: false}))
+    (map-set alert-resolution-history {animal-id: animal-id, alert-id: alert-id} {
+      resolved-at: stacks-block-height,
+      resolved-by: tx-sender
+    })
+    (ok true)
+  )
+)
+
+(define-public (trigger-wellness-alert-from-checkup (animal-id uint) (due-date uint))
+  (begin
+    (asserts! (is-authorized-vet tx-sender) err-unauthorized)
+    (asserts! (is-some (map-get? animals animal-id)) err-not-found)
+    (create-alert animal-id due-date)
+  )
 )
